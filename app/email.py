@@ -197,9 +197,10 @@ def _reminder_html(survey_title: str, survey_url: str, sender_name: str) -> str:
 
 
 def _batch_send(*, payload: list, kind: str) -> dict:
-    """Send a batch via Resend. Surfaces the last error message in the
-    return value so callers can include it in their HTTP response for
-    diagnostics — the previous version swallowed the error entirely."""
+    """Send each email individually via Resend.Emails.send so messages look
+    like one-to-one correspondence instead of a bulk campaign. Gmail tab
+    classifiers route batch-API sends and bulk-pattern emails to Promotions
+    far more often; per-recipient single sends ride on transactional rails."""
     if not resend.api_key:
         msg = "RESEND_API_KEY is not configured"
         logger.warning("Resend: %s (skipping %d %s)", msg, len(payload), kind)
@@ -207,17 +208,16 @@ def _batch_send(*, payload: list, kind: str) -> dict:
     if not payload:
         return {"sent": 0, "failed": 0, "error": None}
 
-    print(f"[EMAIL] sending {len(payload)} {kind} via Resend")
+    print(f"[EMAIL] sending {len(payload)} {kind} via Resend (single sends)")
     sent, failed = 0, 0
     last_error: Optional[str] = None
-    for i in range(0, len(payload), 100):
-        chunk = payload[i:i + 100]
+    for item in payload:
         try:
-            resend.Batch.send(chunk)
-            sent += len(chunk)
+            resend.Emails.send(item)
+            sent += 1
         except Exception as e:
-            logger.exception("Resend batch %s failed: %s", kind, e)
-            failed += len(chunk)
+            logger.exception("Resend %s send failed for %s: %s", kind, item.get("to"), e)
+            failed += 1
             last_error = str(e)
     return {"sent": sent, "failed": failed, "error": last_error}
 
@@ -249,17 +249,6 @@ def _build_payload(
             "subject": subject,
             "html": html_builder(survey_title, url, sender_name),
             "text": text_builder(survey_title, url, sender_name),
-            "headers": {
-                # Signals to Gmail that this is a transactional message that
-                # recipients opted into — generally lifts Primary-tab routing.
-                "List-Unsubscribe": f"<mailto:{sender_email or FROM_EMAIL}?subject=unsubscribe>",
-                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-            },
-            "tags": [
-                {"name": "app", "value": "customer-survey"},
-                {"name": "type", "value": kind},
-                {"name": "survey_id", "value": survey_id},
-            ],
         })
     return out
 
@@ -275,7 +264,7 @@ def send_survey_invites_batch(
         survey_title=survey_title,
         sender_name=sender_name,
         sender_email=sender_email,
-        subject=f"{_first_name(sender_name)} would like your feedback",
+        subject=f"Quick favour from {_first_name(sender_name)}",
         html_builder=_invite_html,
         text_builder=_invite_text,
     )
@@ -293,7 +282,7 @@ def send_survey_reminders_batch(
         survey_title=survey_title,
         sender_name=sender_name,
         sender_email=sender_email,
-        subject=f"A quick reminder from {_first_name(sender_name)}",
+        subject=f"Following up — {_first_name(sender_name)}",
         html_builder=_reminder_html,
         text_builder=_reminder_text,
     )
