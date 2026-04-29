@@ -244,8 +244,8 @@ def _build_payload(
         url = _survey_url(survey_id, token=token)
         out.append({
             "from": _from_field(sender_name),
-            "to": [addr],
-            "reply_to": [sender_email] if sender_email else [FROM_EMAIL],
+            "to": addr,
+            "reply_to": sender_email if sender_email else FROM_EMAIL,
             "subject": subject,
             "html": html_builder(survey_title, url, sender_name),
             "text": text_builder(survey_title, url, sender_name),
