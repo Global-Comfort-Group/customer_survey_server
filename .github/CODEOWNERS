@@ -1,0 +1,5 @@
+# CODEOWNERS for customer_survey_server
+# Default owner for all files in this repository.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+*  @ai-officer
