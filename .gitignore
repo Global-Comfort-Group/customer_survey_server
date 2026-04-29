@@ -1,15 +1,40 @@
-venv/
+# Python bytecode and caches
 __pycache__/
 *.pyc
 *.pyo
-.env
+
+# Virtualenvs
+venv/
+env/
+.venv/
+.venv-test/
+
+# Build / packaging
 *.egg-info/
 dist/
 build/
+
+# Tooling caches
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Business documents (kept on disk, removed from index)
+*.docx
+*.pdf
 
 # Dev / test screenshots and Playwright artefacts
-*.png
+/*.png
 *.jpg
 *.jpeg
 .playwright-mcp/
@@ -17,17 +42,5 @@ build/
 # Claude Code worker scratch
 .claude/
 
-# Local virtualenvs
-.venv/
-.venv-test/
-
 # Local-only screenshots and helper folders
 .local/
-
-# Local seed / setup scripts (kept on disk only)
-seed.py
-setup_db.sh
-
-# Business documents (kept on disk, removed from index)
-*.docx
-*.pdf
