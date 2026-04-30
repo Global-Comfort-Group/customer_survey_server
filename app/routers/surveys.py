@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security.utils import get_authorization_scheme_param
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
 
 from ..database import get_db
-from ..models import Survey, Question, AuditLog, User, UserRole, SurveyDistribution
+from ..models import Survey, Question, Response, AuditLog, User, UserRole, SurveyDistribution
 from ..schemas import SurveyCreate, SurveyUpdate, SurveyOut, PublicSurveyOut
 from ..security import require_admin_or_manager, require_any, decode_token
 
@@ -65,7 +66,17 @@ def list_surveys(
     if filter_status:
         q = q.filter(Survey.status == filter_status)
     surveys = q.order_by(Survey.created_at.desc()).all()
-    return [SurveyOut.from_orm_survey(s) for s in surveys]
+    survey_ids = [s.id for s in surveys]
+    counts: dict[str, int] = {}
+    if survey_ids:
+        rows = (
+            db.query(Response.survey_id, func.count(Response.id))
+            .filter(Response.survey_id.in_(survey_ids))
+            .group_by(Response.survey_id)
+            .all()
+        )
+        counts = {sid: c for sid, c in rows}
+    return [SurveyOut.from_orm_survey(s, counts.get(s.id, 0)) for s in surveys]
 
 
 @router.post("", response_model=SurveyOut, status_code=status.HTTP_201_CREATED)
