@@ -9,7 +9,7 @@ from sqlalchemy import text
 from .database import engine, Base, SessionLocal
 from .models import User, UserRole, Department
 from .security import hash_password
-from .routers import surveys, responses, analytics, auth, users, audit, distribution, export, departments
+from .routers import surveys, responses, analytics, auth, users, audit, distribution, export, departments, files
 
 
 def _seed_admin(db):
@@ -75,6 +75,11 @@ def _run_migrations(db):
     ))
     db.commit()
 
+    # 'file' question type: create_all() will not extend an enum that already
+    # exists, so the value has to be added explicitly on upgraded installs.
+    db.execute(text("ALTER TYPE questiontype ADD VALUE IF NOT EXISTS 'file'"))
+    db.commit()
+
 
 def _seed_departments(db):
     """Seed an empty departments table on first run. Admins can manage the list at runtime."""
@@ -131,6 +136,7 @@ app.include_router(responses.router)
 app.include_router(analytics.router)
 app.include_router(audit.router)
 app.include_router(export.router)
+app.include_router(files.router)
 
 
 @app.get("/health")

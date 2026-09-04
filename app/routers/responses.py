@@ -5,7 +5,10 @@ import hashlib
 import uuid
 
 from ..database import get_db
-from ..models import Response, Survey, SurveyDistribution, AuditLog, UserRole
+from ..models import (
+    Response, Survey, SurveyDistribution, AuditLog, UserRole,
+    Attachment, AttachmentOwnerType, AttachmentStatus,
+)
 from ..schemas import ResponseCreate, ResponseOut
 from ..security import require_any
 
@@ -75,6 +78,16 @@ def submit_response(payload: ResponseCreate, request: Request, db: Session = Dep
         is_anonymous=bool(payload.is_anonymous),
     )
     db.add(response)
+
+    # Files were uploaded before this Response existed, so they are parented to
+    # the respondent's token. Re-parent the committed ones now that there is a
+    # real row to hang them on; abandoned uploads stay pending and get swept.
+    if payload.token:
+        db.query(Attachment).filter(
+            Attachment.owner_type == AttachmentOwnerType.response,
+            Attachment.owner_id == payload.token,
+            Attachment.status == AttachmentStatus.committed,
+        ).update({Attachment.owner_id: response.id}, synchronize_session=False)
 
     # Mark distribution as responded — prefer token match, fall back to email lookup
     if matched_dist:

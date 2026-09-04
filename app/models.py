@@ -29,6 +29,19 @@ class QuestionType(str, enum.Enum):
     rating = "rating"
     multiple_choice = "multiple-choice"
     boolean = "boolean"
+    file = "file"
+
+
+class AttachmentOwnerType(str, enum.Enum):
+    response = "response"
+    survey_asset = "survey_asset"
+    export = "export"
+    library = "library"
+
+
+class AttachmentStatus(str, enum.Enum):
+    pending = "pending"
+    committed = "committed"
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -141,3 +154,28 @@ class AuditLog(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="audit_logs")
+
+
+class Attachment(Base):
+    """A file in the object store.
+
+    Rows are created `pending` when an upload URL is minted and promoted to
+    `committed` only once the object is confirmed present in the bucket, so a
+    client that abandons an upload never leaves a usable record behind.
+
+    `owner_id` is polymorphic. For `owner_type=response` it holds the
+    respondent's SurveyDistribution token during upload — the Response row does
+    not exist yet — and is re-parented to the Response id on submit.
+    """
+    __tablename__ = "attachments"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    key = Column(String, nullable=False, unique=True)
+    filename = Column(String, nullable=False, default="")
+    content_type = Column(String, nullable=False, default="application/octet-stream")
+    size_bytes = Column(Integer, nullable=False, default=0)
+    owner_type = Column(Enum(AttachmentOwnerType), nullable=False)
+    owner_id = Column(String, nullable=True, index=True)
+    uploaded_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    status = Column(Enum(AttachmentStatus), nullable=False, default=AttachmentStatus.pending)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

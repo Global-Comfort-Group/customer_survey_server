@@ -15,6 +15,7 @@ class QuestionType(str, Enum):
     rating = "rating"
     multiple_choice = "multiple-choice"
     boolean = "boolean"
+    file = "file"
 
 
 # ── Question ──────────────────────────────────────────────────────────────────
@@ -245,3 +246,32 @@ class SurveyAnalytics(BaseModel):
     csatOverTime: list[CsatPoint]
     commonThemes: list[ThemeCount]
     openEndedResponses: list[str]
+
+
+# ── Attachments ───────────────────────────────────────────────────────────────
+
+class UploadUrlRequest(BaseModel):
+    filename: str
+    contentType: str
+    ownerType: str = "response"
+    ownerId: Optional[str] = None
+    # Respondent's SurveyDistribution token; required for anonymous uploads.
+    token: Optional[str] = None
+    surveyId: Optional[str] = None
+
+
+class UploadUrlOut(BaseModel):
+    attachmentId: str
+    url: str
+    fields: dict[str, Any]
+    maxBytes: int
+
+
+class AttachmentOut(BaseModel):
+    id: str
+    filename: str
+    contentType: str
+    sizeBytes: int
+    ownerType: str
+    ownerId: Optional[str] = None
+    createdAt: Optional[datetime] = None

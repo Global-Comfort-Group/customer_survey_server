@@ -65,6 +65,7 @@ from app.models import (  # noqa: E402
 )
 from app.routers import (  # noqa: E402
     analytics,
+    files,
     audit,
     auth,
     departments,
@@ -128,6 +129,7 @@ def app(engine, TestSession) -> FastAPI:
     application.include_router(analytics.router)
     application.include_router(audit.router)
     application.include_router(export.router)
+    application.include_router(files.router)
 
     @application.get("/health")
     def health():
@@ -167,6 +169,52 @@ def _stub_email_send(monkeypatch):
     monkeypatch.setattr(
         "app.routers.distribution.send_survey_reminders_batch", _stub, raising=True
     )
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Object storage stub (autouse) — no test may reach the real bucket.
+# ───────────────────────────────────────────────────────────────────────────────
+
+
+class FakeBucket:
+    """In-memory stand-in for the object store.
+
+    `put` is what a browser would do against the presigned URL; tests call it
+    directly to simulate a completed upload.
+    """
+
+    def __init__(self):
+        self.objects: dict[str, int] = {}
+        self.presigned: list[str] = []
+        self.deleted: list[str] = []
+
+    def put(self, key: str, size: int = 1234):
+        self.objects[key] = size
+
+
+@pytest.fixture(autouse=True)
+def bucket(monkeypatch) -> FakeBucket:
+    fake = FakeBucket()
+
+    def _presign_upload(key, content_type, max_bytes=None):
+        fake.presigned.append(key)
+        return {"url": "https://bucket.test/upload", "fields": {"key": key}}
+
+    monkeypatch.setattr("app.storage.is_enabled", lambda: True)
+    monkeypatch.setattr("app.storage.presign_upload", _presign_upload)
+    monkeypatch.setattr(
+        "app.storage.presign_download",
+        lambda key, filename: f"https://bucket.test/get/{key}",
+    )
+    monkeypatch.setattr(
+        "app.storage.head",
+        lambda key: ({"ContentLength": fake.objects[key]} if key in fake.objects else None),
+    )
+    monkeypatch.setattr(
+        "app.storage.delete",
+        lambda key: (fake.deleted.append(key), fake.objects.pop(key, None))[0],
+    )
+    return fake
 
 
 # ───────────────────────────────────────────────────────────────────────────────

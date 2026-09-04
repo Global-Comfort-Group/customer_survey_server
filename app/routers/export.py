@@ -15,6 +15,27 @@ from ..database import get_db
 from ..models import Survey, Response, User, UserRole
 from ..security import require_admin_or_manager
 
+def _render_answer(val, question_type=None):
+    """Flatten an answer into a spreadsheet cell.
+
+    File answers hold a list of attachment ids, which would otherwise print as
+    a Python repr. They render as a count and the dashboard links through to
+    the files. Other list-valued answers (multi-select) keep their contents.
+    """
+    if val is None:
+        return ""
+    qt = getattr(question_type, "value", question_type)
+    if qt == "file":
+        ids = val if isinstance(val, list) else [val]
+        ids = [i for i in ids if i]
+        return f"{len(ids)} file(s)" if ids else ""
+    if isinstance(val, list):
+        return ", ".join(str(v) for v in val)
+    if isinstance(val, dict):
+        return ", ".join(f"{k}: {v}" for k, v in val.items())
+    return val
+
+
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 
@@ -40,7 +61,7 @@ def _build_rows(survey, responses):
             respondent,
         ]
         for q in survey.questions:
-            val = r.answers.get(q.id, "")
+            val = _render_answer(r.answers.get(q.id, ""), q.type)
             row.append(str(val))
         rows.append(row)
 
