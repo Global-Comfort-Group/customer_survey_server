@@ -169,6 +169,45 @@ def test_download_requires_authentication(client, db, bucket, published_survey, 
     assert client.get(f"/api/files/{aid}/download").status_code == 401
 
 
+def test_guest_can_view_their_own_pending_upload(client, db, bucket, published_survey, token):
+    """A respondent must be able to check what they attached before submitting."""
+    aid = _committed(client, db, bucket, published_survey, token)
+    r = client.get(f"/api/files/{aid}/download", params={"token": token.id})
+    assert r.status_code == 200, r.text
+    assert r.json()["url"].startswith("https://bucket.test/get/")
+
+
+def test_guest_cannot_view_someone_elses_upload(client, db, bucket, published_survey, token):
+    from app.models import SurveyDistribution
+
+    aid = _committed(client, db, bucket, published_survey, token)
+    other = SurveyDistribution(survey_id=published_survey.id, email=None)
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+
+    assert client.get(f"/api/files/{aid}/download",
+                      params={"token": other.id}).status_code == 401
+
+
+def test_guest_token_stops_working_once_the_response_is_submitted(
+    client, db, bucket, published_survey, token
+):
+    """After submit the attachment belongs to the response, not the token."""
+    aid = _committed(client, db, bucket, published_survey, token)
+    assert client.get(f"/api/files/{aid}/download",
+                      params={"token": token.id}).status_code == 200
+
+    client.post("/api/responses", json={
+        "surveyId": published_survey.id,
+        "answers": {published_survey.questions[0].id: [aid]},
+        "token": token.id,
+    })
+
+    assert client.get(f"/api/files/{aid}/download",
+                      params={"token": token.id}).status_code == 401
+
+
 def test_staff_can_download(client, db, bucket, published_survey, token, manager_headers):
     aid = _committed(client, db, bucket, published_survey, token)
     r = client.get(f"/api/files/{aid}/download", headers=manager_headers)

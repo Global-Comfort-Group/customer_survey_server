@@ -5,7 +5,7 @@ valid, unused SurveyDistribution token for a published, in-window survey — the
 same guards `submit_response` applies — rather than on authentication.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
 
@@ -19,7 +19,7 @@ from ..models import (
     User,
 )
 from ..schemas import UploadUrlRequest, UploadUrlOut, AttachmentOut
-from ..security import get_current_user, require_any
+from ..security import get_current_user_optional, require_any
 from .. import storage
 
 router = APIRouter(prefix="/api/files", tags=["files"])
@@ -207,16 +207,36 @@ def confirm_upload(attachment_id: str, db: Session = Depends(get_db)):
 @router.get("/{attachment_id}/download")
 def download(
     attachment_id: str,
+    token: str | None = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
-    """Presigned GET. Response attachments are survey answers, so reading one
-    requires a logged-in staff member."""
+    """Presigned GET.
+
+    Staff may read any attachment. A guest may read only a file they uploaded
+    and have not yet submitted, proven by presenting the same invite token the
+    upload was parented to. Once the response is submitted the attachment is
+    re-parented to the response id, so that token no longer opens it — which is
+    correct: the respondent's session is over.
+    """
     _require_storage()
 
     a = db.query(Attachment).filter(Attachment.id == attachment_id).first()
     if not a or a.status != AttachmentStatus.committed:
         raise HTTPException(status_code=404, detail="Attachment not found")
+
+    if current_user is None:
+        owns_it = (
+            bool(token)
+            and a.owner_type == AttachmentOwnerType.response
+            and a.owner_id == token
+        )
+        if not owns_it:
+            raise HTTPException(
+                status_code=401,
+                detail="Not authorised to view this file",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     return {"url": storage.presign_download(a.key, a.filename), "filename": a.filename}
 

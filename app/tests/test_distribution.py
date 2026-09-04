@@ -165,3 +165,52 @@ def test_remind_pending_recipients(
 def test_remind_unknown_survey_404(client, admin_headers):
     r = client.post(f"/api/surveys/{uuid.uuid4()}/remind", headers=admin_headers)
     assert r.status_code == 404
+
+
+# ── Regressions ───────────────────────────────────────────────────────────────
+
+
+def test_reminders_skip_anonymous_scan_tokens(client, db, admin_headers, make_survey, admin_user):
+    """Anonymous QR tokens live in survey_distributions with a NULL email.
+    Including them made Resend reject the whole send with
+    "The `to` field must be a `string`"."""
+    from app.models import SurveyDistribution, SurveyStatus
+
+    survey = make_survey(owner=admin_user, status=SurveyStatus.published)
+    db.add(SurveyDistribution(survey_id=survey.id, email="real@example.com"))
+    db.add(SurveyDistribution(survey_id=survey.id, email=None))   # QR scan
+    db.add(SurveyDistribution(survey_id=survey.id, email=None))   # QR scan
+    db.commit()
+
+    r = client.post(f"/api/surveys/{survey.id}/remind", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["sent"] == 1, body
+    assert body["failed"] == 0, body
+
+    # the anonymous rows must be left alone, not stamped as reminded
+    anon = db.query(SurveyDistribution).filter(
+        SurveyDistribution.survey_id == survey.id,
+        SurveyDistribution.email.is_(None),
+    ).all()
+    assert len(anon) == 2
+    assert all(a.reminder_sent_at is None for a in anon)
+
+
+def test_distribute_explains_when_everyone_was_already_invited(
+    client, db, admin_headers, make_survey, admin_user
+):
+    """"Sent 0 invite(s)" with no reason reads as a broken feature."""
+    from app.models import SurveyStatus
+
+    survey = make_survey(owner=admin_user, status=SurveyStatus.published)
+    first = client.post(f"/api/surveys/{survey.id}/distribute",
+                        headers=admin_headers, json={"emails": ["a@example.com"]})
+    assert first.status_code == 200
+
+    again = client.post(f"/api/surveys/{survey.id}/distribute",
+                        headers=admin_headers, json={"emails": ["a@example.com"]})
+    body = again.json()
+    assert body["already_invited"] == 1
+    assert body["sent"] == 0
+    assert "already invited" in body["message"], body["message"]

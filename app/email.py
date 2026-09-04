@@ -239,7 +239,10 @@ def _build_payload(
     without a token (e.g. CSV import use-case) get the bare survey URL."""
     out = []
     for r in recipients:
-        addr = r["email"] if isinstance(r, dict) else r
+        addr = r.get("email") if isinstance(r, dict) else r
+        # Anonymous scan tokens have no address; Resend rejects a null `to`.
+        if not addr:
+            continue
         token = r.get("token") if isinstance(r, dict) else None
         url = _survey_url(survey_id, token=token)
         out.append({

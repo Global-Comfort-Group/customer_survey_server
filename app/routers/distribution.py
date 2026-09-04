@@ -100,9 +100,16 @@ def distribute(
         "sent":             result["sent"],
         "failed":           result["failed"],
         "error":            result.get("error"),
-        "message":          f"Sent {result['sent']} invite(s)" + (
-            f" ({result['failed']} failed: {result['error']})"
-            if result["failed"] and result.get("error") else ""
+        "message":          (
+            f"Sent {result['sent']} invite(s)"
+            + (
+                f"; {len(incoming) - len(new_emails)} already invited"
+                if len(incoming) - len(new_emails) else ""
+            )
+            + (
+                f" ({result['failed']} failed: {result['error']})"
+                if result["failed"] and result.get("error") else ""
+            )
         ),
     }
 
@@ -118,9 +125,15 @@ def remind(
     if not survey:
         raise HTTPException(status_code=404, detail="Survey not found")
 
+    # Anonymous QR / public-landing tokens are stored in this same table with a
+    # NULL email (they exist purely for per-visit dedup). They have no address
+    # to remind, and including them made Resend reject the send with
+    # "The `to` field must be a `string`".
     pending = db.query(SurveyDistribution).filter(
         SurveyDistribution.survey_id == survey_id,
         SurveyDistribution.has_responded == False,
+        SurveyDistribution.email.isnot(None),
+        SurveyDistribution.email != "",
     ).all()
 
     if not pending:

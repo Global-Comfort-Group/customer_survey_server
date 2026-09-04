@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from openpyxl import Workbook
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 from ..database import get_db
@@ -116,26 +116,86 @@ def export_responses(
 
     elif format == "pdf":
         buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=30, bottomMargin=30)
+        # Landscape: a survey row is base columns plus one per question, which
+        # never fitted portrait A4 — the table ran off both page edges and the
+        # reader saw an arbitrary middle slice.
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4),
+            topMargin=28, bottomMargin=28, leftMargin=24, rightMargin=24,
+        )
         styles = getSampleStyleSheet()
-        elements = []
+        cell = ParagraphStyle("cell", parent=styles["BodyText"], fontSize=7.5, leading=9.5)
+        head = ParagraphStyle("head", parent=cell, textColor=colors.white,
+                              fontName="Helvetica-Bold")
 
-        elements.append(Paragraph(f"Survey Responses: {survey.title}", styles["Title"]))
-        elements.append(Paragraph(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["Normal"]))
-        elements.append(Spacer(1, 12))
+        elements = [
+            Paragraph(f"Survey Responses: {survey.title}", styles["Title"]),
+            Paragraph(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["Normal"]),
+            Spacer(1, 12),
+        ]
 
-        table_data = [headers] + rows
-        t = Table(table_data, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4f46e5")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f9fafb")]),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e5e7eb")),
-            ("PADDING", (0, 0), (-1, -1), 4),
-        ]))
-        elements.append(t)
+        avail = doc.width
+        n_questions = max(0, len(headers) - 3)
+        BASE_WIDTHS = [58, 78, 66]          # id (shortened), timestamp, respondent
+        MIN_Q_WIDTH = 62
+        per_question = (avail - sum(BASE_WIDTHS)) / n_questions if n_questions else 0
+
+        def _short_id(v):
+            return str(v)[:8]
+
+        if n_questions and per_question < MIN_Q_WIDTH:
+            # Too many questions to fit any legible grid. A wide table here is
+            # what produced overlapping, unreadable blocks, so switch layout:
+            # one block per response, questions down the page.
+            for r_i, row in enumerate(rows):
+                meta = (
+                    f"<b>Response</b> {_short_id(row[0])} &nbsp;|&nbsp; "
+                    f"<b>Submitted</b> {row[1]} &nbsp;|&nbsp; <b>Respondent</b> {row[2]}"
+                )
+                elements.append(Paragraph(meta, cell))
+                elements.append(Spacer(1, 4))
+                qa = [
+                    [Paragraph(str(headers[i]), cell), Paragraph(str(row[i]), cell)]
+                    for i in range(3, len(headers))
+                ]
+                t = Table(qa, colWidths=[avail * 0.32, avail * 0.68])
+                t.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f3f4f6")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e5e7eb")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]))
+                elements.append(t)
+                if r_i != len(rows) - 1:
+                    elements.append(Spacer(1, 14))
+        else:
+            col_widths = BASE_WIDTHS + [per_question] * n_questions
+            # Every cell is a Paragraph so long answers wrap instead of
+            # overflowing into neighbouring columns.
+            table_data = [[Paragraph(str(h), head) for h in headers]] + [
+                [Paragraph(_short_id(row[0]), cell)]
+                + [Paragraph(str(v), cell) for v in row[1:]]
+                for row in rows
+            ]
+            t = Table(table_data, colWidths=col_widths, repeatRows=1)
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4f46e5")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f9fafb")]),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e5e7eb")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            elements.append(t)
+
+        if not rows:
+            elements.append(Paragraph("No responses yet.", styles["Normal"]))
+
         doc.build(elements)
         buf.seek(0)
         return StreamingResponse(

@@ -16,6 +16,9 @@ EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+# auto_error=False so anonymous callers reach the endpoint instead of being
+# rejected at the dependency; the endpoint decides what a guest may see.
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -74,3 +77,24 @@ def require_roles(*roles: UserRole):
 require_admin = require_roles(UserRole.admin)
 require_admin_or_manager = require_roles(UserRole.admin, UserRole.manager)
 require_any = require_roles(UserRole.admin, UserRole.manager)
+
+
+def get_current_user_optional(
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """The signed-in user, or None for an anonymous caller.
+
+    For endpoints shared by staff and guests, where the guest is authorised by
+    something other than a login (an invite token, say).
+    """
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    return db.query(User).filter(User.id == user_id, User.is_active == True).first()
