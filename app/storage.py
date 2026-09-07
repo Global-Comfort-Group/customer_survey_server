@@ -88,11 +88,32 @@ def presign_upload(key: str, content_type: str, max_bytes: int = MAX_UPLOAD_BYTE
     )
 
 
-def presign_download(key: str, filename: str) -> str:
+def presign_download(
+    key: str,
+    filename: str,
+    *,
+    inline: bool = False,
+    content_type: str | None = None,
+) -> str:
+    """Presigned GET.
+
+    `inline` decides whether the browser renders the object or saves it. Every
+    viewer path — the respondent checking what they attached, the manager
+    reviewing a response — wants `inline`, so an image opens in the lightbox
+    and a PDF opens in the browser's own PDF viewer instead of landing in the
+    downloads folder. `ResponseContentType` is overridden alongside it because
+    the browser picks its viewer from the response's Content-Type, and the
+    object's stored type is not something we want to depend on here.
+    """
     params: dict[str, Any] = {"Bucket": _BUCKET, "Key": key}
+    disposition = "inline" if inline else "attachment"
     if filename:
         safe = filename.replace('"', "")
-        params["ResponseContentDisposition"] = f'attachment; filename="{safe}"'
+        params["ResponseContentDisposition"] = f'{disposition}; filename="{safe}"'
+    else:
+        params["ResponseContentDisposition"] = disposition
+    if content_type:
+        params["ResponseContentType"] = content_type
     return _get_client().generate_presigned_url(
         "get_object", Params=params, ExpiresIn=DOWNLOAD_URL_TTL_SECONDS
     )

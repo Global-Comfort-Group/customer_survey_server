@@ -73,6 +73,21 @@ def _run_migrations(db):
     db.execute(text(
         "ALTER TABLE responses ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT FALSE"
     ))
+
+    # User: activity stamp for the Users directory, and per-user email switches.
+    db.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ"
+    ))
+    db.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_prefs JSONB"
+    ))
+    for col in ("job_title", "phone", "language", "timezone"):
+        db.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} VARCHAR"))
+    # Department: nominated head, shown on the department detail pane.
+    db.execute(text(
+        "ALTER TABLE departments ADD COLUMN IF NOT EXISTS head_user_id VARCHAR "
+        "REFERENCES users(id) ON DELETE SET NULL"
+    ))
     db.commit()
 
     # 'file' question type: create_all() will not extend an enum that already

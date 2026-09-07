@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from datetime import datetime, timezone
 import uuid
 
 from ..database import get_db
@@ -33,11 +34,36 @@ def login(
     request: Request = None,
     db: Session = Depends(get_db),
 ):
+    ip = request.client.host if request and request.client else "unknown"
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
+        # Failed attempts are audited too: the Settings sign-in history and the
+        # "Failed sign-ins" figure on the audit screen both read from this.
+        db.add(AuditLog(
+            id=str(uuid.uuid4()),
+            user_id=user.id if user else None,
+            action="LOGIN_FAILED",
+            resource="user",
+            resource_id=user.id if user else None,
+            detail=f"Failed sign-in for {form.username}",
+            ip_address=ip,
+        ))
+        db.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
+        db.add(AuditLog(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            action="LOGIN_FAILED",
+            resource="user",
+            resource_id=user.id,
+            detail=f"Sign-in blocked: {user.email} is deactivated",
+            ip_address=ip,
+        ))
+        db.commit()
         raise HTTPException(status_code=403, detail="Your account has been deactivated")
+
+    user.last_active_at = datetime.now(timezone.utc)
 
     db.add(AuditLog(
         id=str(uuid.uuid4()),
@@ -46,7 +72,7 @@ def login(
         resource="user",
         resource_id=user.id,
         detail=f"User logged in: {user.email}",
-        ip_address=request.client.host if request and request.client else "unknown",
+        ip_address=ip,
     ))
     db.commit()
 

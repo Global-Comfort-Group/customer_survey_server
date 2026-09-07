@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security.utils import get_authorization_scheme_param
-from sqlalchemy import func
+from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
@@ -68,15 +68,24 @@ def list_surveys(
     surveys = q.order_by(Survey.created_at.desc()).all()
     survey_ids = [s.id for s in surveys]
     counts: dict[str, int] = {}
+    complete: dict[str, int] = {}
     if survey_ids:
         rows = (
-            db.query(Response.survey_id, func.count(Response.id))
+            db.query(
+                Response.survey_id,
+                func.count(Response.id),
+                func.sum(case((Response.is_complete == True, 1), else_=0)),
+            )
             .filter(Response.survey_id.in_(survey_ids))
             .group_by(Response.survey_id)
             .all()
         )
-        counts = {sid: c for sid, c in rows}
-    return [SurveyOut.from_orm_survey(s, counts.get(s.id, 0)) for s in surveys]
+        counts = {sid: total for sid, total, _ in rows}
+        complete = {sid: int(done or 0) for sid, _, done in rows}
+    return [
+        SurveyOut.from_orm_survey(s, counts.get(s.id, 0), complete.get(s.id, 0))
+        for s in surveys
+    ]
 
 
 @router.post("", response_model=SurveyOut, status_code=status.HTTP_201_CREATED)

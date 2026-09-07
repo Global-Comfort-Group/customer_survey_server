@@ -127,3 +127,64 @@ def test_delete_department_as_manager_forbidden(client, manager_headers, make_de
     d = make_department("ToDelete")
     r = client.delete(f"/api/departments/{d.id}", headers=manager_headers)
     assert r.status_code == 403
+
+
+# ── Detail aggregates for the departments master/detail screen ───────────────
+
+
+def test_department_list_carries_detail_aggregates(
+    client, db, admin_headers, admin_user, make_survey, make_response, make_department
+):
+    from app.models import QuestionType, SurveyStatus
+
+    dept = make_department(name="Food & Beverage")
+    published = make_survey(
+        owner=admin_user, title="Dining", status=SurveyStatus.published, department=dept,
+        questions=[{"type": QuestionType.rating, "text": "Rate the food"}],
+    )
+    make_survey(
+        owner=admin_user, title="Banquets", status=SurveyStatus.draft, department=dept,
+        questions=[{"type": QuestionType.text, "text": "Notes?"}],
+    )
+    qid = published.questions[0].id
+    for score in (5, 5, 5, 4, 3):
+        make_response(survey=published, answers={qid: score})
+
+    rows = client.get("/api/departments", headers=admin_headers).json()
+    row = next(r for r in rows if r["name"] == "Food & Beverage")
+
+    assert row["code"] == "FB"
+    assert row["surveyCount"] == 2
+    assert row["publishedCount"] == 1
+    assert row["responseCount"] == 5
+    assert row["ratingMix"] == [0, 0, 1, 1, 3]
+    assert row["csat"] == 4.4          # (3+4+5+5+5)/5 = 4.4
+
+
+def test_department_without_ratings_reports_no_csat(
+    client, admin_headers, make_department
+):
+    """An em dash is correct for "no data"; 0.0 would read as a terrible score."""
+    make_department(name="Human Resources")
+    rows = client.get("/api/departments", headers=admin_headers).json()
+    row = next(r for r in rows if r["name"] == "Human Resources")
+    assert row["csat"] is None
+    assert row["ratingMix"] == [0, 0, 0, 0, 0]
+    assert row["responseCount"] == 0
+    assert row["code"] == "HR"
+
+
+def test_department_code_handles_single_word_names(client, admin_headers, make_department):
+    make_department(name="Finance")
+    rows = client.get("/api/departments", headers=admin_headers).json()
+    assert next(r for r in rows if r["name"] == "Finance")["code"] == "FI"
+
+
+def test_department_codes_are_deduplicated(client, admin_headers, make_department):
+    """Two names can share initials; the tiles must still be distinguishable."""
+    make_department(name="Customer Service")
+    make_department(name="Corporate Sales")
+    rows = client.get("/api/departments", headers=admin_headers).json()
+    codes = [r["code"] for r in rows if r["name"] in ("Customer Service", "Corporate Sales")]
+    assert sorted(codes) == ["CS", "CS2"]
+    assert len(set(r["code"] for r in rows)) == len(rows)

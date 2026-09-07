@@ -208,6 +208,7 @@ def confirm_upload(attachment_id: str, db: Session = Depends(get_db)):
 def download(
     attachment_id: str,
     token: str | None = Query(None),
+    disposition: str = Query("inline", pattern="^(inline|attachment)$"),
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
 ):
@@ -218,6 +219,13 @@ def download(
     upload was parented to. Once the response is submitted the attachment is
     re-parented to the response id, so that token no longer opens it — which is
     correct: the respondent's session is over.
+
+    `disposition` defaults to `inline` because every caller today is a viewer:
+    an image belongs in the lightbox and a PDF in the browser's PDF viewer.
+    `attachment` remains available for a deliberate "save a copy" action.
+
+    The response carries `contentType` so the caller can pick the viewer
+    without sniffing the filename.
     """
     _require_storage()
 
@@ -238,7 +246,16 @@ def download(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    return {"url": storage.presign_download(a.key, a.filename), "filename": a.filename}
+    return {
+        "url": storage.presign_download(
+            a.key,
+            a.filename,
+            inline=disposition == "inline",
+            content_type=a.content_type,
+        ),
+        "filename": a.filename,
+        "contentType": a.content_type,
+    }
 
 
 @router.get("", response_model=list[AttachmentOut])

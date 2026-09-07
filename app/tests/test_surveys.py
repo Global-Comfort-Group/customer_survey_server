@@ -176,3 +176,41 @@ def test_duplicate_survey_creates_copy_owned_by_caller(
     assert body["createdBy"] == manager_user.id
     assert body["id"] != original.id
     assert len(body["questions"]) == 1
+
+
+def test_survey_list_reports_per_survey_completion_rate(
+    client, admin_headers, admin_user, make_survey, make_response, db
+):
+    """The surveys table and the dashboard both show completion per survey, so
+    it must not fall back to a programme-wide average."""
+    from app.models import SurveyStatus, QuestionType, Response
+
+    survey = make_survey(
+        owner=admin_user, status=SurveyStatus.published,
+        questions=[{"type": QuestionType.rating, "text": "Rate"}],
+    )
+    qid = survey.questions[0].id
+    for _ in range(3):
+        make_response(survey=survey, answers={qid: 5})
+    partial = make_response(survey=survey, answers={qid: 4})
+    db.query(Response).filter(Response.id == partial.id).update({"is_complete": False})
+    db.commit()
+
+    row = next(
+        s for s in client.get("/api/surveys", headers=admin_headers).json()
+        if s["id"] == survey.id
+    )
+    assert row["responseCount"] == 4
+    assert row["completionRate"] == 75
+
+
+def test_survey_without_responses_reports_zero_completion(
+    client, admin_headers, admin_user, make_survey
+):
+    survey = make_survey(owner=admin_user)
+    row = next(
+        s for s in client.get("/api/surveys", headers=admin_headers).json()
+        if s["id"] == survey.id
+    )
+    assert row["responseCount"] == 0
+    assert row["completionRate"] == 0

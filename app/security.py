@@ -47,6 +47,22 @@ def decode_token(token: str) -> dict:
         )
 
 
+# How stale `last_active_at` may get before an authenticated request refreshes
+# it. Writing on every request would put an UPDATE in front of every read.
+ACTIVITY_REFRESH = timedelta(minutes=5)
+
+
+def _touch_last_active(db: Session, user: User) -> None:
+    now = datetime.now(timezone.utc)
+    last = user.last_active_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is not None and now - last < ACTIVITY_REFRESH:
+        return
+    user.last_active_at = now
+    db.commit()
+
+
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
@@ -58,6 +74,7 @@ def get_current_user(
     user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found or deactivated")
+    _touch_last_active(db, user)
     return user
 
 

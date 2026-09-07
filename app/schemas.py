@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, Any
+import re
 from datetime import datetime
 from enum import Enum
 
@@ -76,11 +77,17 @@ class SurveyOut(BaseModel):
     customer: Optional[str] = None
     questions: list[QuestionOut] = []
     responseCount: int = 0
+    # Share of this survey's responses that were submitted complete. The
+    # surveys table and the dashboard both show it per survey, so it is
+    # computed once here rather than derived from a programme-wide average.
+    completionRate: int = 0
 
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_orm_survey(cls, survey, response_count: int = 0) -> "SurveyOut":
+    def from_orm_survey(
+        cls, survey, response_count: int = 0, complete_count: int = 0
+    ) -> "SurveyOut":
         created_by_name = None
         if hasattr(survey, "creator") and survey.creator:
             created_by_name = survey.creator.full_name
@@ -99,6 +106,7 @@ class SurveyOut(BaseModel):
             customer=survey.customer,
             questions=[QuestionOut.model_validate(q) for q in survey.questions],
             responseCount=response_count,
+            completionRate=round(complete_count / response_count * 100) if response_count else 0,
         )
 
 
@@ -178,10 +186,50 @@ class DepartmentOut(BaseModel):
     id: str
     name: str
     createdAt: datetime
+    # Two-letter tile shown on the departments master list. Derived, not stored:
+    # the design labels departments by initials ("Front Office" → FO).
+    code: str = ""
+    headName: Optional[str] = None
+    surveyCount: int = 0
+    publishedCount: int = 0
+    responseCount: int = 0
+    # None when the department has no rating answers yet — the design renders
+    # an em dash rather than a zero, which would read as "terrible".
+    csat: Optional[float] = None
+    # Counts for 1★…5★, always five entries.
+    ratingMix: list[int] = [0, 0, 0, 0, 0]
 
     @classmethod
     def from_orm_department(cls, d) -> "DepartmentOut":
-        return cls(id=d.id, name=d.name, createdAt=d.created_at)
+        return cls(id=d.id, name=d.name, createdAt=d.created_at, code=department_code(d.name))
+
+
+def department_code(name: str) -> str:
+    """Initials of the first two words, uppercased — "Food & Beverage" → FB.
+
+    Single-word names fall back to their first two letters ("Finance" → FI).
+    """
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", name or "") if w]
+    if not words:
+        return "--"
+    if len(words) == 1:
+        return words[0][:2].upper()
+    return (words[0][0] + words[1][0]).upper()
+
+
+class NotificationPrefs(BaseModel):
+    newResponses: bool = True
+    surveyPublished: bool = True
+    weeklySummary: bool = False
+    # Forced on server-side: the design labels this "Always on".
+    securityAlerts: bool = True
+
+
+class SignInEvent(BaseModel):
+    timestamp: datetime
+    ipAddress: Optional[str] = None
+    detail: Optional[str] = None
+    success: bool
 
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
@@ -189,6 +237,9 @@ class DepartmentOut(BaseModel):
 class TrendPoint(BaseModel):
     name: str
     responses: int
+    # Same weekday one window earlier — drives the dashed comparison line on
+    # the dashboard trend chart. Zero when there is no earlier data.
+    previous: int = 0
 
 
 class CsatPoint(BaseModel):

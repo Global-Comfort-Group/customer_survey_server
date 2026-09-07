@@ -202,10 +202,16 @@ def bucket(monkeypatch) -> FakeBucket:
 
     monkeypatch.setattr("app.storage.is_enabled", lambda: True)
     monkeypatch.setattr("app.storage.presign_upload", _presign_upload)
-    monkeypatch.setattr(
-        "app.storage.presign_download",
-        lambda key, filename: f"https://bucket.test/get/{key}",
-    )
+    def _presign_download(key, filename, *, inline=False, content_type=None):
+        # Mirrors the real signature so a caller that stops asking for `inline`
+        # shows up as a failing assertion rather than silently downloading.
+        return (
+            f"https://bucket.test/get/{key}"
+            f"?disposition={'inline' if inline else 'attachment'}"
+            f"&type={content_type or ''}"
+        )
+
+    monkeypatch.setattr("app.storage.presign_download", _presign_download)
     monkeypatch.setattr(
         "app.storage.head",
         lambda key: ({"ContentLength": fake.objects[key]} if key in fake.objects else None),

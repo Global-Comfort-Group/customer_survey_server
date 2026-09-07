@@ -140,3 +140,109 @@ def test_deactivate_unknown_user_returns_404(client, admin_headers):
         headers=admin_headers,
     )
     assert r.status_code == 404
+
+
+# ── Settings screen: activity, notification prefs, sign-in history ───────────
+
+
+def test_last_active_is_stamped_by_an_authenticated_request(client, db, manager_user, manager_headers):
+    from app.models import User
+
+    assert manager_user.last_active_at is None
+    client.get("/api/surveys", headers=manager_headers)
+    db.expire_all()
+    assert db.query(User).get(manager_user.id).last_active_at is not None
+
+
+def test_last_active_is_exposed_on_the_directory(client, admin_headers, manager_headers):
+    client.get("/api/surveys", headers=manager_headers)
+    rows = client.get("/api/users", headers=admin_headers).json()
+    assert any(r["last_active_at"] for r in rows)
+    # An account that has never signed in reports null rather than a fake date.
+    assert all("last_active_at" in r for r in rows)
+
+
+def test_notification_prefs_default_and_round_trip(client, manager_headers):
+    prefs = client.get("/api/users/me/notifications", headers=manager_headers).json()
+    assert prefs == {
+        "newResponses": True, "surveyPublished": True,
+        "weeklySummary": False, "securityAlerts": True,
+    }
+
+    saved = client.put(
+        "/api/users/me/notifications",
+        headers=manager_headers,
+        json={"newResponses": False, "surveyPublished": False,
+              "weeklySummary": True, "securityAlerts": True},
+    ).json()
+    assert saved["weeklySummary"] is True
+    assert saved["newResponses"] is False
+    assert client.get("/api/users/me/notifications", headers=manager_headers).json() == saved
+
+
+def test_security_alerts_cannot_be_switched_off(client, manager_headers):
+    """The design labels this row "Always on", so the server pins it."""
+    saved = client.put(
+        "/api/users/me/notifications",
+        headers=manager_headers,
+        json={"newResponses": True, "surveyPublished": True,
+              "weeklySummary": False, "securityAlerts": False},
+    ).json()
+    assert saved["securityAlerts"] is True
+
+
+def test_notification_prefs_are_per_user(client, manager_headers, admin_headers):
+    client.put(
+        "/api/users/me/notifications", headers=manager_headers,
+        json={"newResponses": False, "surveyPublished": True,
+              "weeklySummary": True, "securityAlerts": True},
+    )
+    assert client.get("/api/users/me/notifications", headers=admin_headers).json()["newResponses"] is True
+
+
+def test_sign_in_history_records_success_and_failure(client, manager_user, manager_headers):
+    client.post("/api/auth/login", data={"username": manager_user.email, "password": "Password123!"})
+    client.post("/api/auth/login", data={"username": manager_user.email, "password": "wrong-password"})
+
+    events = client.get("/api/users/me/sign-ins", headers=manager_headers).json()
+    assert len(events) >= 2
+    # Both outcomes are recorded. Their relative order is not asserted: the two
+    # events can land in the same second, and the endpoint only promises
+    # newest-first by timestamp.
+    assert any(e["success"] for e in events)
+    assert any(not e["success"] for e in events)
+    assert all("ipAddress" in e for e in events)
+    assert events == sorted(events, key=lambda e: e["timestamp"], reverse=True)
+
+
+def test_sign_in_history_is_scoped_to_the_caller(client, admin_user, manager_headers):
+    client.post("/api/auth/login", data={"username": admin_user.email, "password": "Password123!"})
+    events = client.get("/api/users/me/sign-ins", headers=manager_headers).json()
+    assert all(admin_user.email not in (e["detail"] or "") for e in events)
+
+
+def test_users_can_edit_their_own_profile(client, manager_headers):
+    saved = client.put("/api/users/me", headers=manager_headers, json={
+        "full_name": "Chris Mendoza", "job_title": "Front Office Manager",
+        "phone": "+63 917 555 0142", "language": "English (Philippines)",
+        "timezone": "Asia/Manila",
+    }).json()
+    assert saved["full_name"] == "Chris Mendoza"
+    assert saved["job_title"] == "Front Office Manager"
+    assert client.get("/api/auth/me", headers=manager_headers).json()["full_name"] == "Chris Mendoza"
+
+
+def test_profile_edit_cannot_change_role_or_email(client, manager_headers, manager_user):
+    original_email, original_role = manager_user.email, manager_user.role
+    saved = client.put("/api/users/me", headers=manager_headers, json={
+        "full_name": "Renamed", "role": "admin", "email": "hacker@evil.com",
+        "is_active": False,
+    }).json()
+    assert saved["email"] == original_email
+    assert saved["role"] == original_role.value
+    assert saved["is_active"] is True
+
+
+def test_profile_name_cannot_be_blanked(client, manager_headers):
+    assert client.put("/api/users/me", headers=manager_headers,
+                      json={"full_name": "   "}).status_code == 400

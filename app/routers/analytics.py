@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, Date
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from collections import Counter
 import re
 
 from ..database import get_db
-from ..models import Survey, Response, SurveyDistribution, Department, User, UserRole
+from ..models import (
+    Survey, Response, SurveyDistribution, Department, User, UserRole,
+    Question, QuestionType,
+)
 from ..schemas import (
     DashboardAnalytics, SurveyAnalytics, CsatPoint, ThemeCount, TrendPoint,
     RatingBucket, DepartmentBucket, DepartmentEngagement,
@@ -101,10 +104,36 @@ def _compute_nps(rating_values: list[float]) -> float:
     return round(((promoters - detractors) / len(rating_values)) * 100, 1)
 
 
-def _extract_ratings(responses: list) -> list[float]:
+def _rating_question_ids(db: Session, survey_ids: list[str]) -> set[str]:
+    """Ids of the rating-scale questions across the given surveys."""
+    if not survey_ids:
+        return set()
+    rows = (
+        db.query(Question.id)
+        .filter(Question.survey_id.in_(survey_ids), Question.type == QuestionType.rating)
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def _extract_ratings(responses: list, rating_qids: set[str] | None = None) -> list[float]:
+    """CSAT scores from rating answers only.
+
+    Two things are deliberately excluded:
+
+    * answers to non-rating questions. Scoping by question id is what makes
+      this correct — a numeric answer to some other question is not a rating.
+    * booleans. `isinstance(True, int)` is True in Python and `1 <= True <= 5`
+      holds, so a Yes/No answer used to be counted as a one-star rating and
+      dragged CSAT and NPS down across the whole console.
+    """
     scores = []
     for r in responses:
-        for val in r.answers.values():
+        for qid, val in (r.answers or {}).items():
+            if rating_qids is not None and qid not in rating_qids:
+                continue
+            if isinstance(val, bool):
+                continue
             if isinstance(val, (int, float)) and 1 <= val <= 5:
                 scores.append(float(val))
     return scores
@@ -148,21 +177,39 @@ def dashboard_analytics(
     complete_responses = sum(1 for r in responses if r.is_complete)
     completion_rate = round((complete_responses / total_responses * 100), 1) if total_responses else 0.0
 
-    rating_scores = _extract_ratings(responses)
+    rating_qids = _rating_question_ids(db, survey_ids)
+    rating_scores = _extract_ratings(responses, rating_qids)
     csat = round(sum(rating_scores) / len(rating_scores), 1) if rating_scores else 0.0
     nps = _compute_nps(rating_scores)
 
-    # 7-day response trend
+    # 14-day response trend, each point carrying the same day of the preceding
+    # 14-day window so the chart can draw the comparison line.
     now = datetime.now(timezone.utc)
+    TREND_DAYS = 14
+
+    prev_q = db.query(Response)
+    if status or survey_ids:
+        prev_q = prev_q.filter(Response.survey_id.in_(survey_ids))
+    window_start = (now - timedelta(days=TREND_DAYS - 1)).date()
+    prev_q = prev_q.filter(
+        Response.submitted_at >= now - timedelta(days=TREND_DAYS * 2 - 1),
+        Response.submitted_at < datetime.combine(window_start, time.min, tzinfo=timezone.utc),
+    )
+    prev_by_day = Counter(
+        r.submitted_at.date() for r in prev_q.all() if r.submitted_at
+    )
+    curr_by_day = Counter(
+        r.submitted_at.date() for r in responses if r.submitted_at
+    )
+
     trend = []
-    for i in range(6, -1, -1):
-        day = now - timedelta(days=i)
-        day_str = day.strftime("%a")
-        count = sum(
-            1 for r in responses
-            if r.submitted_at and r.submitted_at.date() == day.date()
-        )
-        trend.append(TrendPoint(name=day_str, responses=count))
+    for i in range(TREND_DAYS - 1, -1, -1):
+        day = (now - timedelta(days=i)).date()
+        trend.append(TrendPoint(
+            name=day.strftime("%-d"),
+            responses=curr_by_day.get(day, 0),
+            previous=prev_by_day.get(day - timedelta(days=TREND_DAYS), 0),
+        ))
 
     # Survey performance (responses per survey, top 7)
     survey_response_counts = Counter(r.survey_id for r in responses)
@@ -213,7 +260,7 @@ def dashboard_analytics(
         d_total = len(dresponses)
         d_complete = sum(1 for r in dresponses if r.is_complete)
         d_participation = round(d_complete / d_total * 100, 1) if d_total else None
-        d_ratings = _extract_ratings(dresponses)
+        d_ratings = _extract_ratings(dresponses, rating_qids)
         d_csat = round(sum(d_ratings) / len(d_ratings), 1) if d_ratings else None
         d_nps = _compute_nps(d_ratings) if d_ratings else None
         dept_department_engagement.append(DepartmentEngagement(
@@ -329,7 +376,7 @@ def survey_analytics(
         for month, scores in sorted(monthly_scores.items())
     ]
 
-    rating_scores = _extract_ratings(responses)
+    rating_scores = _extract_ratings(responses, _rating_question_ids(db, [survey.id]))
     nps = _compute_nps(rating_scores)
     csat_avg = round(sum(rating_scores) / len(rating_scores), 1) if rating_scores else 0.0
 
@@ -356,3 +403,23 @@ def survey_analytics(
         commonThemes=common_themes,
         openEndedResponses=open_ended[:20],
     )
+
+
+@router.get("/public/summary", tags=["public"])
+def public_summary(db: Session = Depends(get_db)):
+    """Programme totals for the sign-in screen's brand panel.
+
+    Unauthenticated by design — the handoff puts these three figures on the
+    public sign-in page. Deliberately aggregate-only: counts and an average,
+    never per-survey, per-department or per-respondent detail.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    responses = db.query(Response).filter(Response.submitted_at >= since).all()
+    ratings = _extract_ratings(
+        responses, _rating_question_ids(db, [r.survey_id for r in responses])
+    )
+    return {
+        "totalResponses": len(responses),
+        "csat": f"{round(sum(ratings) / len(ratings), 1)}" if ratings else "—",
+        "departments": db.query(Department).count(),
+    }

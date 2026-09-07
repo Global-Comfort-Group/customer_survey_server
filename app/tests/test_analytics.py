@@ -79,3 +79,94 @@ def test_survey_analytics_unauth(client, admin_user, make_survey):
     s = make_survey(owner=admin_user, status=SurveyStatus.published)
     r = client.get(f"/api/analytics/{s.id}")
     assert r.status_code == 401
+
+
+def test_trend_is_fourteen_days_with_a_comparison_series(
+    client, admin_headers, admin_user, make_survey, make_response
+):
+    """The dashboard draws a dashed previous-period line behind the current one."""
+    from app.models import SurveyStatus, QuestionType
+
+    survey = make_survey(
+        owner=admin_user, status=SurveyStatus.published,
+        questions=[{"type": QuestionType.rating, "text": "Rate"}],
+    )
+    make_response(survey=survey, answers={survey.questions[0].id: 5})
+
+    data = client.get("/api/analytics", headers=admin_headers).json()
+    trend = data["responseTrend"]
+    assert len(trend) == 14
+    assert all("previous" in p for p in trend)
+    # Today's bucket holds the response just created.
+    assert trend[-1]["responses"] == 1
+    # No data 14 days back, so the comparison series is flat at zero.
+    assert sum(p["previous"] for p in trend) == 0
+
+
+def test_public_summary_needs_no_authentication(client, admin_user, make_survey, make_response):
+    """The sign-in screen shows these three figures before anyone has logged in."""
+    from app.models import SurveyStatus, QuestionType
+
+    survey = make_survey(
+        owner=admin_user, status=SurveyStatus.published,
+        questions=[{"type": QuestionType.rating, "text": "Rate"}],
+    )
+    for score in (5, 4):
+        make_response(survey=survey, answers={survey.questions[0].id: score})
+
+    r = client.get("/api/analytics/public/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["totalResponses"] == 2
+    assert body["csat"] == "4.5"
+    assert set(body) == {"totalResponses", "csat", "departments"}
+
+
+def test_public_summary_reports_a_dash_with_no_ratings(client):
+    body = client.get("/api/analytics/public/summary").json()
+    assert body["csat"] == "—"
+    assert body["totalResponses"] == 0
+
+
+def test_yes_no_answers_are_not_counted_as_one_star_ratings(
+    client, admin_headers, admin_user, make_survey, make_response
+):
+    """Regression: `isinstance(True, int)` is True in Python, so a Yes/No answer
+    satisfied `1 <= val <= 5` and was averaged in as a one-star rating."""
+    from app.models import SurveyStatus, QuestionType
+
+    survey = make_survey(
+        owner=admin_user, status=SurveyStatus.published,
+        questions=[
+            {"type": QuestionType.rating, "text": "Rate us"},
+            {"type": QuestionType.boolean, "text": "Room ready?"},
+        ],
+    )
+    rating_q, bool_q = survey.questions[0], survey.questions[1]
+    for _ in range(4):
+        make_response(survey=survey, answers={rating_q.id: 5, bool_q.id: True})
+
+    body = client.get("/api/analytics", headers=admin_headers).json()
+    assert body["csat"] == "5.0"
+    assert body["nps"] == 100.0
+    assert [b["count"] for b in body["ratingDistribution"]] == [0, 0, 0, 0, 4]
+
+
+def test_numeric_answers_to_non_rating_questions_are_excluded(
+    client, admin_headers, admin_user, make_survey, make_response
+):
+    """A multiple-choice answer that happens to be a number is not a rating."""
+    from app.models import SurveyStatus, QuestionType
+
+    survey = make_survey(
+        owner=admin_user, status=SurveyStatus.published,
+        questions=[
+            {"type": QuestionType.rating, "text": "Rate us"},
+            {"type": QuestionType.multiple_choice, "text": "How many nights?",
+             "options": ["1", "2", "3"]},
+        ],
+    )
+    rating_q, mc_q = survey.questions[0], survey.questions[1]
+    make_response(survey=survey, answers={rating_q.id: 4, mc_q.id: 1})
+
+    assert client.get("/api/analytics", headers=admin_headers).json()["csat"] == "4.0"

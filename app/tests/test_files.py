@@ -215,6 +215,38 @@ def test_staff_can_download(client, db, bucket, published_survey, token, manager
     assert r.json()["url"].startswith("https://bucket.test/get/")
 
 
+def test_view_urls_are_inline_and_typed(client, db, bucket, published_survey, token, manager_headers):
+    """Regression: the presigned URL forced `attachment`, so "View" downloaded
+    the file instead of opening it. Both the guest and the manager viewer need
+    an inline URL carrying the real content type, or the browser saves the file
+    rather than showing the image / opening its PDF viewer."""
+    aid = _committed(client, db, bucket, published_survey, token)
+
+    for r in (
+        client.get(f"/api/files/{aid}/download", params={"token": token.id}),
+        client.get(f"/api/files/{aid}/download", headers=manager_headers),
+    ):
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "disposition=inline" in body["url"]
+        assert body["contentType"] == "image/png"
+        assert f"type={body['contentType']}" in body["url"]
+
+
+def test_download_disposition_can_be_requested_explicitly(
+    client, db, bucket, published_survey, token, manager_headers
+):
+    """Saving a copy is still available for a deliberate download action."""
+    aid = _committed(client, db, bucket, published_survey, token)
+    r = client.get(
+        f"/api/files/{aid}/download",
+        params={"disposition": "attachment"},
+        headers=manager_headers,
+    )
+    assert r.status_code == 200
+    assert "disposition=attachment" in r.json()["url"]
+
+
 def test_pending_uploads_are_not_downloadable(client, published_survey, token, manager_headers):
     aid = _mint(client, published_survey.id, token.id).json()["attachmentId"]
     r = client.get(f"/api/files/{aid}/download", headers=manager_headers)

@@ -57,6 +57,17 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_approved = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Written on authenticated requests, throttled — see security.get_current_user.
+    last_active_at = Column(DateTime(timezone=True), nullable=True)
+    # Self-service profile fields. Email, role and department stay read-only
+    # here by design — role changes belong to the admin Users screen.
+    job_title = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    language = Column(String, nullable=True)
+    timezone = Column(String, nullable=True)
+    # Per-user email notification switches. NULL means "never set" and reads as
+    # the defaults in schemas.NotificationPrefs.
+    notification_prefs = Column(JSON, nullable=True)
 
     audit_logs = relationship("AuditLog", back_populates="user")
 
@@ -67,8 +78,10 @@ class Department(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String, unique=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    head_user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     surveys = relationship("Survey", back_populates="department")
+    head = relationship("User", foreign_keys=[head_user_id])
 
 
 class Survey(Base):

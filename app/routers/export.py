@@ -1,6 +1,7 @@
 import csv
 import io
 from datetime import datetime
+from xml.sax.saxutils import escape as _xml_escape
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -34,6 +35,20 @@ def _render_answer(val, question_type=None):
     if isinstance(val, dict):
         return ", ".join(f"{k}: {v}" for k, v in val.items())
     return val
+
+
+def _escape(val) -> str:
+    """Make a value safe to put inside a reportlab Paragraph.
+
+    Paragraph parses a small HTML dialect, so survey text is markup to it, not
+    data. An answer like "The <staff were rude" ended the parse with an
+    unclosed tag and returned a 500 — which the browser then saved under a
+    .pdf name, giving the manager a file no reader could display. An "&" did
+    not raise but was silently rewritten ("id=1&ref=2" became "id=1&ref;=2").
+    Everything user-authored — answers, question text, respondent names, the
+    survey title — goes through here.
+    """
+    return _xml_escape("" if val is None else str(val))
 
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -129,7 +144,7 @@ def export_responses(
                               fontName="Helvetica-Bold")
 
         elements = [
-            Paragraph(f"Survey Responses: {survey.title}", styles["Title"]),
+            Paragraph(f"Survey Responses: {_escape(survey.title)}", styles["Title"]),
             Paragraph(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["Normal"]),
             Spacer(1, 12),
         ]
@@ -149,13 +164,14 @@ def export_responses(
             # one block per response, questions down the page.
             for r_i, row in enumerate(rows):
                 meta = (
-                    f"<b>Response</b> {_short_id(row[0])} &nbsp;|&nbsp; "
-                    f"<b>Submitted</b> {row[1]} &nbsp;|&nbsp; <b>Respondent</b> {row[2]}"
+                    f"<b>Response</b> {_escape(_short_id(row[0]))} &nbsp;|&nbsp; "
+                    f"<b>Submitted</b> {_escape(row[1])} &nbsp;|&nbsp; "
+                    f"<b>Respondent</b> {_escape(row[2])}"
                 )
                 elements.append(Paragraph(meta, cell))
                 elements.append(Spacer(1, 4))
                 qa = [
-                    [Paragraph(str(headers[i]), cell), Paragraph(str(row[i]), cell)]
+                    [Paragraph(_escape(headers[i]), cell), Paragraph(_escape(row[i]), cell)]
                     for i in range(3, len(headers))
                 ]
                 t = Table(qa, colWidths=[avail * 0.32, avail * 0.68])
@@ -175,9 +191,9 @@ def export_responses(
             col_widths = BASE_WIDTHS + [per_question] * n_questions
             # Every cell is a Paragraph so long answers wrap instead of
             # overflowing into neighbouring columns.
-            table_data = [[Paragraph(str(h), head) for h in headers]] + [
-                [Paragraph(_short_id(row[0]), cell)]
-                + [Paragraph(str(v), cell) for v in row[1:]]
+            table_data = [[Paragraph(_escape(h), head) for h in headers]] + [
+                [Paragraph(_escape(_short_id(row[0])), cell)]
+                + [Paragraph(_escape(v), cell) for v in row[1:]]
                 for row in rows
             ]
             t = Table(table_data, colWidths=col_widths, repeatRows=1)

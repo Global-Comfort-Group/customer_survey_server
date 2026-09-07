@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 import uuid
 
 from ..database import get_db
-from ..models import Department, AuditLog, User
-from ..schemas import DepartmentCreate, DepartmentUpdate, DepartmentOut
+from ..models import Department, AuditLog, User, Survey, Response, Question, QuestionType
+from ..schemas import DepartmentCreate, DepartmentUpdate, DepartmentOut, department_code
 from ..security import require_admin, require_any
 
 router = APIRouter(prefix="/api/departments", tags=["departments"])
@@ -26,13 +26,87 @@ def _ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _rating_question_ids(db: Session, survey_ids: list[str]) -> set[str]:
+    if not survey_ids:
+        return set()
+    rows = (
+        db.query(Question.id)
+        .filter(Question.survey_id.in_(survey_ids), Question.type == QuestionType.rating)
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def _departments_with_stats(db: Session) -> list[DepartmentOut]:
+    """The master list plus everything its detail pane shows.
+
+    One pass over surveys and responses rather than a query per department —
+    the list is small but this is the screen's only call.
+    """
+    depts = db.query(Department).order_by(Department.name.asc()).all()
+    surveys = db.query(Survey).filter(Survey.department_id.isnot(None)).all()
+
+    by_dept: dict[str, list[Survey]] = {}
+    for s in surveys:
+        by_dept.setdefault(s.department_id, []).append(s)
+
+    all_ids = [s.id for s in surveys]
+    responses = (
+        db.query(Response).filter(Response.survey_id.in_(all_ids)).all() if all_ids else []
+    )
+    responses_by_survey: dict[str, list[Response]] = {}
+    for r in responses:
+        responses_by_survey.setdefault(r.survey_id, []).append(r)
+
+    rating_qids = _rating_question_ids(db, all_ids)
+
+    # Two departments can share initials ("Customer Service" / "Corporate
+    # Sales"); the later one gets a numeric suffix so the tiles stay distinct.
+    seen: dict[str, int] = {}
+
+    out = []
+    for d in depts:
+        own = by_dept.get(d.id, [])
+        mix = [0, 0, 0, 0, 0]
+        response_count = 0
+        for s in own:
+            for r in responses_by_survey.get(s.id, []):
+                response_count += 1
+                for qid, val in (r.answers or {}).items():
+                    if qid not in rating_qids:
+                        continue
+                    try:
+                        bucket = int(round(float(val)))
+                    except (TypeError, ValueError):
+                        continue
+                    if 1 <= bucket <= 5:
+                        mix[bucket - 1] += 1
+
+        rated = sum(mix)
+        csat = (
+            round(sum((i + 1) * n for i, n in enumerate(mix)) / rated, 1) if rated else None
+        )
+
+        row = DepartmentOut.from_orm_department(d)
+        seen[row.code] = seen.get(row.code, 0) + 1
+        if seen[row.code] > 1:
+            row.code = f"{row.code}{seen[row.code]}"
+        row.headName = d.head.full_name if d.head else None
+        row.surveyCount = len(own)
+        row.publishedCount = sum(1 for s in own if s.status == "published")
+        row.responseCount = response_count
+        row.csat = csat
+        row.ratingMix = mix
+        out.append(row)
+    return out
+
+
 @router.get("", response_model=list[DepartmentOut])
 def list_departments(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_any),
 ):
-    depts = db.query(Department).order_by(Department.name.asc()).all()
-    return [DepartmentOut.from_orm_department(d) for d in depts]
+    return _departments_with_stats(db)
 
 
 @router.post("", response_model=DepartmentOut, status_code=status.HTTP_201_CREATED)
