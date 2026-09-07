@@ -243,6 +243,11 @@ def duplicate_survey(
         status="draft",
         start_date=start_date,
         end_date=end_date,
+        # Carried over with the rest of the survey. Dropping these detached the
+        # copy from its department, which also removed it from that
+        # department's CSAT and rating-mix aggregates.
+        department_id=original.department_id,
+        customer=original.customer,
         created_by=current_user.id,
     )
     db.add(new_survey)

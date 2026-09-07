@@ -180,6 +180,25 @@ def test_duplicate_survey_creates_copy_owned_by_caller(
     assert len(body["questions"]) == 1
 
 
+def test_duplicate_carries_department_and_customer(
+    client, manager_headers, manager_user, make_survey, make_department
+):
+    """A copy that loses its department also drops out of that department's
+    CSAT and rating-mix aggregates on the Departments screen."""
+    dept = make_department(name="Housekeeping")
+    original = make_survey(
+        owner=manager_user,
+        title="Quarterly",
+        department=dept,
+        customer="Acme Corp",
+    )
+    r = client.post(f"/api/surveys/{original.id}/duplicate", headers=manager_headers)
+    assert r.status_code == 201
+    body = r.json()
+    assert body["departmentId"] == dept.id
+    assert body["customer"] == "Acme Corp"
+
+
 def test_duplicate_drops_a_window_that_has_already_ended(
     client, manager_headers, manager_user, make_survey
 ):
