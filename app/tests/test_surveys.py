@@ -1,5 +1,7 @@
 """CRUD + ownership scoping on /api/surveys."""
 
+from datetime import datetime, timedelta, timezone
+
 from app.models import SurveyStatus
 
 
@@ -176,6 +178,44 @@ def test_duplicate_survey_creates_copy_owned_by_caller(
     assert body["createdBy"] == manager_user.id
     assert body["id"] != original.id
     assert len(body["questions"]) == 1
+
+
+def test_duplicate_drops_a_window_that_has_already_ended(
+    client, manager_headers, manager_user, make_survey
+):
+    """Copying an expired window produced a survey born closed — a brand new
+    draft that the public page refused to open. The copy should come back with
+    a clear schedule so the manager can pick a fresh one."""
+    original = make_survey(
+        owner=manager_user,
+        title="Last quarter",
+        status=SurveyStatus.published,
+        start_date=datetime.now(timezone.utc) - timedelta(days=60),
+        end_date=datetime.now(timezone.utc) - timedelta(days=30),
+    )
+    r = client.post(f"/api/surveys/{original.id}/duplicate", headers=manager_headers)
+    assert r.status_code == 201
+    body = r.json()
+    assert body["startDate"] is None
+    assert body["endDate"] is None
+
+
+def test_duplicate_keeps_a_window_that_is_still_open(
+    client, manager_headers, manager_user, make_survey
+):
+    """A window still in play is worth inheriting; only expired ones are cleared."""
+    original = make_survey(
+        owner=manager_user,
+        title="Running",
+        status=SurveyStatus.published,
+        start_date=datetime.now(timezone.utc) - timedelta(days=1),
+        end_date=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    r = client.post(f"/api/surveys/{original.id}/duplicate", headers=manager_headers)
+    assert r.status_code == 201
+    body = r.json()
+    assert body["startDate"] is not None
+    assert body["endDate"] is not None
 
 
 def test_survey_list_reports_per_survey_completion_rate(

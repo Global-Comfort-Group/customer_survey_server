@@ -3,6 +3,7 @@ from fastapi.security.utils import get_authorization_scheme_param
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 from typing import Optional
+from datetime import datetime, timezone
 import uuid
 
 from ..database import get_db
@@ -11,6 +12,18 @@ from ..schemas import SurveyCreate, SurveyUpdate, SurveyOut, PublicSurveyOut
 from ..security import require_admin_or_manager, require_any, decode_token
 
 router = APIRouter(prefix="/api/surveys", tags=["surveys"])
+
+
+def _has_passed(moment) -> bool:
+    """True when `moment` is in the past. Postgres hands back tz-aware values
+    for these TIMESTAMPTZ columns but SQLite (used by the tests) hands back
+    naive ones, and comparing the two raises TypeError, so naive values are
+    read as UTC rather than assumed to be aware."""
+    if moment is None:
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment < datetime.now(timezone.utc)
 
 
 def _log(db, user_id, action, resource_id, detail, ip):
@@ -213,13 +226,23 @@ def duplicate_survey(
     if not original:
         raise HTTPException(status_code=404, detail="Survey not found")
 
+    # A copy inherits the original's schedule only while that window can still
+    # be used. Copying a window that has already ended produced a survey born
+    # closed: the duplicate is a draft meant to be re-run, but the public page
+    # and POST /responses both refuse anything past its end date, so the
+    # manager got a brand new survey that no one could open. When the original
+    # has expired we clear both bounds and let them pick a fresh window.
+    start_date, end_date = original.start_date, original.end_date
+    if _has_passed(end_date):
+        start_date, end_date = None, None
+
     new_survey = Survey(
         id=str(uuid.uuid4()),
         title=f"{original.title} (Copy)",
         description=original.description,
         status="draft",
-        start_date=original.start_date,
-        end_date=original.end_date,
+        start_date=start_date,
+        end_date=end_date,
         created_by=current_user.id,
     )
     db.add(new_survey)
