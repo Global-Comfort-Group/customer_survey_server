@@ -170,3 +170,35 @@ def test_numeric_answers_to_non_rating_questions_are_excluded(
     make_response(survey=survey, answers={rating_q.id: 4, mc_q.id: 1})
 
     assert client.get("/api/analytics", headers=admin_headers).json()["csat"] == "4.0"
+
+
+def test_editing_a_survey_does_not_erase_its_rating_history(
+    client, admin_headers, admin_user, make_survey, make_response, db
+):
+    """Saving a survey deletes and reinserts its questions with fresh UUIDs, so
+    every stored answer is keyed by an id that no longer resolves. Scoping CSAT
+    strictly to current rating-question ids meant one innocuous edit wiped the
+    survey's whole rating history and blanked the figure."""
+    survey = make_survey(
+        owner=admin_user,
+        status=SurveyStatus.published,
+        questions=[{"type": "rating", "text": "How did we do?"}],
+    )
+    qid = survey.questions[0].id
+    make_response(survey=survey, answers={qid: 5})
+    make_response(survey=survey, answers={qid: 4})
+
+    before = client.get("/api/analytics/public/summary").json()["csat"]
+    assert before == "4.5"
+
+    # Re-save the survey exactly as the editor does — same question, new id.
+    r = client.put(
+        f"/api/surveys/{survey.id}",
+        headers=admin_headers,
+        json={"questions": [{"type": "rating", "text": "How did we do?"}]},
+    )
+    assert r.status_code == 200
+    assert r.json()["questions"][0]["id"] != qid, "ids are expected to be regenerated"
+
+    after = client.get("/api/analytics/public/summary").json()["csat"]
+    assert after == "4.5", f"editing the survey lost its ratings: {before} -> {after}"

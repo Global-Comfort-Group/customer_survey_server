@@ -104,34 +104,43 @@ def _compute_nps(rating_values: list[float]) -> float:
     return round(((promoters - detractors) / len(rating_values)) * 100, 1)
 
 
-def _rating_question_ids(db: Session, survey_ids: list[str]) -> set[str]:
-    """Ids of the rating-scale questions across the given surveys."""
+def _question_types(db: Session, survey_ids: list[str]) -> dict[str, QuestionType]:
+    """Type of every question across the given surveys, keyed by question id."""
     if not survey_ids:
-        return set()
+        return {}
     rows = (
-        db.query(Question.id)
-        .filter(Question.survey_id.in_(survey_ids), Question.type == QuestionType.rating)
+        db.query(Question.id, Question.type)
+        .filter(Question.survey_id.in_(survey_ids))
         .all()
     )
-    return {r[0] for r in rows}
+    return {qid: qtype for qid, qtype in rows}
 
 
-def _extract_ratings(responses: list, rating_qids: set[str] | None = None) -> list[float]:
+def _extract_ratings(responses: list, qtypes: dict[str, QuestionType] | None = None) -> list[float]:
     """CSAT scores from rating answers only.
 
     Two things are deliberately excluded:
 
-    * answers to non-rating questions. Scoping by question id is what makes
-      this correct — a numeric answer to some other question is not a rating.
+    * answers to a question known to be something other than a rating. A
+      numeric answer to another question is not a rating.
     * booleans. `isinstance(True, int)` is True in Python and `1 <= True <= 5`
       holds, so a Yes/No answer used to be counted as a one-star rating and
       dragged CSAT and NPS down across the whole console.
+
+    An answer whose question id is no longer on the survey still counts. Saving
+    a survey deletes and reinserts its questions with fresh UUIDs (a3cbf7e did
+    that to get past a primary-key clash on publish), so every historical
+    answer is keyed by an id that no longer resolves. Dropping those made a
+    single innocuous edit erase the survey's entire rating history and blank
+    the CSAT figure. Unknown ids fall back to the value test.
     """
     scores = []
     for r in responses:
         for qid, val in (r.answers or {}).items():
-            if rating_qids is not None and qid not in rating_qids:
-                continue
+            if qtypes is not None:
+                qtype = qtypes.get(qid)
+                if qtype is not None and qtype != QuestionType.rating:
+                    continue
             if isinstance(val, bool):
                 continue
             if isinstance(val, (int, float)) and 1 <= val <= 5:
@@ -177,8 +186,8 @@ def dashboard_analytics(
     complete_responses = sum(1 for r in responses if r.is_complete)
     completion_rate = round((complete_responses / total_responses * 100), 1) if total_responses else 0.0
 
-    rating_qids = _rating_question_ids(db, survey_ids)
-    rating_scores = _extract_ratings(responses, rating_qids)
+    qtypes = _question_types(db, survey_ids)
+    rating_scores = _extract_ratings(responses, qtypes)
     csat = round(sum(rating_scores) / len(rating_scores), 1) if rating_scores else 0.0
     nps = _compute_nps(rating_scores)
 
@@ -260,7 +269,7 @@ def dashboard_analytics(
         d_total = len(dresponses)
         d_complete = sum(1 for r in dresponses if r.is_complete)
         d_participation = round(d_complete / d_total * 100, 1) if d_total else None
-        d_ratings = _extract_ratings(dresponses, rating_qids)
+        d_ratings = _extract_ratings(dresponses, qtypes)
         d_csat = round(sum(d_ratings) / len(d_ratings), 1) if d_ratings else None
         d_nps = _compute_nps(d_ratings) if d_ratings else None
         dept_department_engagement.append(DepartmentEngagement(
@@ -376,7 +385,7 @@ def survey_analytics(
         for month, scores in sorted(monthly_scores.items())
     ]
 
-    rating_scores = _extract_ratings(responses, _rating_question_ids(db, [survey.id]))
+    rating_scores = _extract_ratings(responses, _question_types(db, [survey.id]))
     nps = _compute_nps(rating_scores)
     csat_avg = round(sum(rating_scores) / len(rating_scores), 1) if rating_scores else 0.0
 
@@ -416,7 +425,7 @@ def public_summary(db: Session = Depends(get_db)):
     since = datetime.now(timezone.utc) - timedelta(days=30)
     responses = db.query(Response).filter(Response.submitted_at >= since).all()
     ratings = _extract_ratings(
-        responses, _rating_question_ids(db, [r.survey_id for r in responses])
+        responses, _question_types(db, [r.survey_id for r in responses])
     )
     return {
         "totalResponses": len(responses),
