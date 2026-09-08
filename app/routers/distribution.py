@@ -85,7 +85,8 @@ def distribute(
     )
     db.commit()
 
-    # Send via Resend — synchronous batched call, reliable on Vercel serverless
+    # Send via Resend — synchronous batched call, so a failure surfaces in the
+    # response rather than disappearing into a background task
     result = send_survey_invites_batch(
         recipients=new_recipients,
         survey_id=survey.id,
